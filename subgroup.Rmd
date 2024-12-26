@@ -1,0 +1,279 @@
+---
+title: 'Subgroup Discovery: SuDiTE + rsubgroup'
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+Установка библиотеки
+
+```{r}
+
+library(remotes)
+devtools::install_github("AlekseyBuzmakov/SuDiTE", subdir = "SuDiTE.R")
+
+```
+
+Пример использования evaluateAlgos на сгенерированных данных
+
+```{r}
+
+library(SuDiTE)
+
+# Генерация данных
+N = 1000
+Trt = rbinom(N,1,0.5)
+X = data.frame(X1=rbinom(N,1,0.6), X2=rnorm(N), X3=rnorm(N))
+Y = as.numeric( ( 2*X$X1 - 1 + X$X2*Trt + rnorm(N) ) > 0 )
+
+
+# Конфигурация моделей
+
+models=list(
+  list(Name="RandomForest", TrainFunc=trainModelRandomForest, PredictFunc=predictByModelRandomForest, TrainOpts=NULL),
+  list(Name="LMbyTian", TrainFunc=trainModelModLM, PredictFunc=predictByModelModLM, TrainOpts=NULL)
+)
+
+
+Ntr=0.8*N
+
+
+# Evaluating algos
+res = evaluateAlgos(
+  models, # The description of the evaluated models
+  c(subgroupAverageTreatmentEffect), # The set of functions that compute the quality of a subgroup
+  
+  seq(0,by=0.1,to = 1), # Groups of 20%
+  
+  Y[1:Ntr], Trt[1:Ntr], X[1:Ntr,], # Train dataset
+  
+  Y[(Ntr+1):N], Trt[(Ntr+1):N], X[(Ntr+1):N,] # Holdout dataset
+)
+
+ seq(0,by=0.1,to = 1)
+
+res
+```
+
+Пример использования crossValidateAlgos на сгенерированных данных.
+
+```{r}
+
+library(SuDiTE)
+
+N = 1000
+Trt = rbinom(N,1,0.5)
+X = data.frame(X1=rbinom(N,1,0.6), X2=rnorm(N), X3=rnorm(N))
+Y = as.numeric( ( 2*X$X1 - 1 + X$X2*Trt + rnorm(N) ) > 0 )
+
+X
+
+# Конфигурация моделей
+models=list(
+  list(Name="RandomForest", TrainFunc=trainModelRandomForest, PredictFunc=predictByModelRandomForest, TrainOpts=NULL),
+  list(Name="LMbyTian", TrainFunc=trainModelModLM, PredictFunc=predictByModelModLM, TrainOpts=NULL),
+  list(Name="ALL", TrainFunc=function(a,b,c,d){NULL}, PredictFunc=function(m,X){rep(1,nrow(X))},TrainOpts=NULL)
+)
+
+
+# Evaluating algos
+res = crossValidateAlgos(
+    models, # The description of the evaluated models
+    c(subgroupAverageTreatmentEffect,subgroupTotalTreatmentEffect), # The set of functions that compute the quality of a subgroup
+    seq(0,by=0.2,to = 1), # Groups of 20%
+    Y, Trt, X,
+    numTrials = 5,
+    balansedSplit, list(InitSplitProportion=0.2)
+    )
+aggregate(cbind(V1, V2) ~ Model, res$Qualities, FUN=mean)
+
+```
+
+Функция нормализации
+
+```{r}
+
+normalize <- function(x) {
+  (x - min(x, na.rm = FALSE)) / (max(x, na.rm = FALSE) - min(x, na.rm = FALSE))
+}
+```
+
+**Датасет cirrhosis c** evaluateAlgos
+
+```{r}
+
+library(dplyr)
+library(SuDiTE)
+
+#Подготовка данных
+
+data = read.csv("./cirrhosis.csv")
+
+trt = ifelse(data$Drug == "Placebo" | is.na(data$Drug), 0, 1);
+target = ifelse(data$Status == "D", 0, 1);
+data <- data %>% dplyr::select(-Status)
+data <- data %>% dplyr::select(-Drug)
+
+replace_na_values <- function(df) {
+  for (col_name in colnames(df)) {
+    if (is.factor(df[[col_name]]) || is.character(df[[col_name]])) {
+      # Для категориальных колонок заменяем NA на строку "NA"
+      df[[col_name]][is.na(df[[col_name]])] <- "NA"
+    } else if (is.numeric(df[[col_name]])) {
+      # Для числовых колонок заменяем NA на среднее значение колонки
+      mean_value <- mean(df[[col_name]], na.rm = TRUE)
+      df[[col_name]][is.na(df[[col_name]])] <- mean_value
+    }
+  }
+  return(df)
+}
+
+
+data <- replace_na_values(data)
+
+transformed <- as.data.frame(lapply(data, function(x) {
+  if (!is.numeric(x)) {
+    # Применяем as.numeric, если переменная не числовая
+    as.numeric(as.factor(x))  # Если это фактор или строка, переводим в числа
+  } else {
+    x  # Если уже числовое, оставляем как есть
+  }
+}))
+
+# Применение к данным
+normalized_data <- as.data.frame(lapply(transformed, function(x) {
+  if (is.numeric(x)) {
+    normalize(x)  # Нормализуем только числовые переменные
+  } else {
+    x  # Остальные переменные оставляем без изменений
+  }
+}))
+
+
+N = nrow(normalized_data)
+
+# Defining models
+models=list(
+  list(Name="RandomForest", TrainFunc=trainModelRandomForest, PredictFunc=predictByModelRandomForest, TrainOpts=NULL),
+  
+  list(Name="LMbyTian", TrainFunc=trainModelModLM, PredictFunc=predictByModelModLM, TrainOpts=NULL),
+  
+  list(Name="XGBBoosting", TrainFunc=trainWeisbergXGb, PredictFunc=predictWeisbergXGb, TrainOpts=list(nrounds = 50, eta = 0.5, subsample = 0.9, depth = 30)),
+  
+  list(Name="WeisbergGLM", TrainFunc=trainWeisbergGLM, PredictFunc=predictWeisbergGLM, TrainOpts=list(alpha = 0, lambda = 0.15)),
+  
+  list(Name="trainUpliftModelRF", TrainFunc=trainUpliftModelRF, PredictFunc=predictUpliftModelRF, TrainOpts=list(split_method = "Chisq", ntree = 55, bag.fraction = 0.5))
+  
+)
+
+
+
+Ntr=0.8*N
+# Evaluating algos
+res = evaluateAlgos(
+  models, # The description of the evaluated models
+  c(subgroupAverageTreatmentEffect,subgroupTotalTreatmentEffect), # The set of functions that compute the quality of a subgroup
+  
+  seq(0,by=1/3,to = 1), # Groups of 30%
+  
+  target[1:Ntr], trt[1:Ntr], normalized_data[1:Ntr,], # Train dataset
+  
+  target[(Ntr+1):N], trt[(Ntr+1):N], normalized_data[(Ntr+1):N,] # Holdout dataset
+)
+
+
+accuracy <- mean(target[(Ntr+1):N] == ifelse( rowSums(res$Subgroups) > 0, 1, 0))
+accuracy
+```
+
+**Найдем топ 30 лучших и 30 худших объектов**
+
+```{r}
+
+#Мерджим holdout данные и оценку каждого объекта для удобства сортировки
+data_with_score <- data.frame(Object = normalized_data[(Ntr+1):N,], ID = data[(Ntr+1):N,]$ID, Score = rowSums(res$Subgroups))
+
+#Сортируем данные
+sorted_data <- data_with_score[order(data_with_score$Score, decreasing = TRUE), ]
+
+#Отбираем 30% лучших
+top_30_percent <- sorted_data[1:ceiling(0.3 * nrow(sorted_data)), ]
+bottom_30_percent <- sorted_data[(nrow(sorted_data) - ceiling(0.3 * nrow(sorted_data)) + 1):nrow(sorted_data), ]
+
+start_index <- ceiling(0.35 * nrow(sorted_data))  # начало середины
+end_index <- floor(0.65 * nrow(sorted_data))  # конец середины
+middle_30_percent <- sorted_data[start_index:end_index, ]
+
+print(top_30_percent)
+print(bottom_30_percent)
+print(middle_30_percent)
+```
+
+```{r}
+
+library(rJava)
+library(rsubgroup)
+
+data = read.csv("./cirrhosis.csv")
+
+
+#Преобразуем категориальные признаки в factor
+data[] <- lapply(data, function(x) if (is.character(x)) as.factor(x) else x)
+
+top_30_best_objects <- data[data$ID %in% top_30_percent$ID, ]
+top_30_worst_objects <- data[data$ID %in% bottom_30_percent$ID, ]
+middle_30_objects <- data[data$ID %in% middle_30_percent$ID, ]
+
+
+top_30_best_result <- DiscoverSubgroups(
+    top_30_best_objects, as.target("Status", "D"),
+    new("SDTaskConfig", attributes=colnames(top_30_best_objects), qf="wracc", k=20, minsize=1, maxlen=10, method="beam")
+)
+
+bottom_30_worst_result <- DiscoverSubgroups(
+    top_30_worst_objects, as.target("Status", "D"),
+    new("SDTaskConfig", attributes=colnames(top_30_worst_objects), qf="wracc", k=20, minsize=1, maxlen=10, method="beam")
+)
+
+
+middle_30_result <- DiscoverSubgroups(
+    middle_30_objects, as.target("Status", "D"),
+    new("SDTaskConfig", attributes=colnames(middle_30_objects), qf="wracc", k=20, minsize=1, maxlen=10, method="beam")
+)
+
+ToDataFrame(top_30_best_result)
+ToDataFrame(middle_30_result)
+ToDataFrame(bottom_30_worst_result)
+```
+
+**Датасет cirrhosis c** crossValidateAlgos
+
+```{r}
+
+# Defining models
+models=list(
+  list(Name="RandomForest", TrainFunc=trainModelRandomForest, PredictFunc=predictByModelRandomForest, TrainOpts=NULL),
+  
+  list(Name="LMbyTian", TrainFunc=trainModelModLM, PredictFunc=predictByModelModLM, TrainOpts=NULL),
+  
+  list(Name="XGBBoosting", TrainFunc=trainWeisbergXGb, PredictFunc=predictWeisbergXGb, TrainOpts=list(nrounds = 50, eta = 0.5, subsample = 0.9, depth = 30)),
+  
+  list(Name="WeisbergGLM", TrainFunc=trainWeisbergGLM, PredictFunc=predictWeisbergGLM, TrainOpts=list(alpha = 0, lambda = 0.15)),
+  
+  list(Name="trainUpliftModelRF", TrainFunc=trainUpliftModelRF, PredictFunc=predictUpliftModelRF, TrainOpts=list(split_method = "Chisq", ntree = 55, bag.fraction = 0.5))
+)
+
+# Evaluating algos
+res = crossValidateAlgos(
+    models, # The description of the evaluated models
+    c(subgroupAverageTreatmentEffect,subgroupTotalTreatmentEffect), # The set of functions that compute the quality of a subgroup
+    seq(0,by=0.2,to = 1), # Groups of 20%
+    target, trt, normalized_data,
+    numTrials = 10,
+    balansedSplit, list(InitSplitProportion=0.2)
+    )
+
+res$Qualities
+```
